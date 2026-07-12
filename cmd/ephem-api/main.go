@@ -4,14 +4,22 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+
+	"github.com/muozez/ephem-centralized-access-broker/internal/api"
 )
 
 func main() {
 	fmt.Println("Starting ephem API Server...")
+
+	// Register Routes
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status": "ok"}`))
 	})
+
+	http.HandleFunc("/v1/auth/login", api.HandleLogin)
+	http.HandleFunc("/v1/auth/callback", api.HandleCallback)
 
 	port := os.Getenv("PORT")
 	if port == "" {
