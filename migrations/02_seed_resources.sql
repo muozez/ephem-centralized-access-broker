@@ -8,7 +8,7 @@ VALUES
     5432,
     'ephem',
     'password',
-    '{"host": "postgres", "port": 5432, "database": "ephem", "user": "ephem", "password": "ephem_password", "sslmode": "disable"}'
+    '{"host": "postgres", "port": 5432, "database": "ephem", "user": "ephem", "password": "ephem_password", "sslmode": "disable", "client_host": "localhost", "client_port": 5432}'
   ),
   (
     '10000000-1000-1000-1000-111111111111',
@@ -17,7 +17,7 @@ VALUES
     22,
     '',
     'ssh_ca',
-    '{"host": "target-ssh", "port": 22, "username": "ubuntu"}'
+    '{"host": "target-ssh", "port": 22, "username": "ubuntu", "client_host": "localhost", "client_port": 2222}'
   )
 ON CONFLICT (id) DO NOTHING;
 

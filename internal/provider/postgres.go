@@ -15,12 +15,14 @@ import (
 type PostgresProvider struct{}
 
 type PostgresConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	SSLMode  string `json:"sslmode"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	Database   string `json:"database"`
+	User       string `json:"user"`
+	Password   string `json:"password"`
+	SSLMode    string `json:"sslmode"`
+	ClientHost string `json:"client_host"`
+	ClientPort int    `json:"client_port"`
 }
 
 type PostgresCredentialPayload struct {
@@ -113,10 +115,19 @@ func (p *PostgresProvider) IssueSession(ctx context.Context, req IssueRequest, c
 		return nil, fmt.Errorf("failed to grant SELECT privilege: %w", err)
 	}
 
+	clientHost := cfg.ClientHost
+	if clientHost == "" {
+		clientHost = cfg.Host
+	}
+	clientPort := cfg.ClientPort
+	if clientPort == 0 {
+		clientPort = cfg.Port
+	}
+
 	// Package response payload
 	credPayload := PostgresCredentialPayload{
-		Host:     cfg.Host,
-		Port:     cfg.Port,
+		Host:     clientHost,
+		Port:     clientPort,
 		Database: cfg.Database,
 		Username: req.Username,
 		Password: tempPassword,

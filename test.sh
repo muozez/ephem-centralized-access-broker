@@ -36,7 +36,7 @@ VALUES (
     5432,
     'ephem',
     'password',
-    '{\"host\": \"localhost\", \"port\": 5432, \"database\": \"ephem\", \"user\": \"ephem\", \"password\": \"ephem_password\", \"sslmode\": \"disable\"}'
+    '{\"host\": \"localhost\", \"port\": 5432, \"database\": \"ephem\", \"user\": \"ephem\", \"password\": \"ephem_password\", \"sslmode\": \"disable\", \"client_host\": \"localhost\", \"client_port\": 5432}'
 );
 
 -- Insert resource
