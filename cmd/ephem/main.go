@@ -1,11 +1,9 @@
 package main
 
 import (
-	"fmt"
-	"os"
+	"github.com/muozez/ephem-centralized-access-broker/internal/cli"
 )
 
 func main() {
-	fmt.Println("ephem CLI - Centralized Ephemeral Access Broker")
-	os.Exit(0)
+	cli.Execute()
 }
