@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -163,6 +164,34 @@ var execCmd = &cobra.Command{
 		}
 
 		// 4. Setup child process execution
+		if len(commandArgs) > 0 {
+			cmdName := commandArgs[0]
+			if _, err := exec.LookPath(cmdName); err != nil {
+				if _, errDocker := exec.LookPath("docker"); errDocker == nil {
+					if cmdName == "redis-cli" {
+						dockerArgs := []string{"run", "--rm", "-i"}
+						if term.IsTerminal(int(os.Stdout.Fd())) {
+							dockerArgs = append(dockerArgs, "-t")
+						}
+						dockerArgs = append(dockerArgs, "--net=host", "redis:alpine", "redis-cli")
+						dockerArgs = append(dockerArgs, commandArgs[1:]...)
+						commandArgs = append([]string{"docker"}, dockerArgs...)
+					} else if cmdName == "psql" {
+						dockerArgs := []string{"run", "--rm", "-i"}
+						if term.IsTerminal(int(os.Stdout.Fd())) {
+							dockerArgs = append(dockerArgs, "-t")
+						}
+						for _, env := range envVars {
+							dockerArgs = append(dockerArgs, "-e", env)
+						}
+						dockerArgs = append(dockerArgs, "--net=host", "postgres:15-alpine", "psql")
+						dockerArgs = append(dockerArgs, commandArgs[1:]...)
+						commandArgs = append([]string{"docker"}, dockerArgs...)
+					}
+				}
+			}
+		}
+
 		child := exec.Command(commandArgs[0], commandArgs[1:]...)
 		child.Stdin = os.Stdin
 		child.Stdout = os.Stdout
