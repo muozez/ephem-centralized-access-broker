@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -106,7 +107,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
-        input, select {
+        input {
             width: 100%;
             padding: 14px;
             background: rgba(255, 255, 255, 0.03);
@@ -118,7 +119,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`
             box-sizing: border-box;
             transition: all 0.2s ease;
         }
-        input:focus, select:focus {
+        input:focus {
             outline: none;
             border-color: var(--primary);
             background: rgba(255, 255, 255, 0.06);
@@ -145,6 +146,13 @@ var loginTemplate = template.Must(template.New("login").Parse(`
         .btn:active {
             transform: translateY(0);
         }
+        .hint {
+            margin-top: 16px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-align: center;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -166,18 +174,11 @@ var loginTemplate = template.Must(template.New("login").Parse(`
                 <input type="text" id="name" name="name" required placeholder="John Doe" value="John Doe">
             </div>
             
-            <div class="form-group">
-                <label for="role">Select Role</label>
-                <select id="role" name="role">
-                    <option value="developer">Developer</option>
-                    <option value="admin">Administrator</option>
-                    <option value="dba">Database Administrator (DBA)</option>
-                    <option value="devops">DevOps Engineer</option>
-                </select>
-            </div>
-            
             <button type="submit" class="btn">Authenticate</button>
         </form>
+        <div class="hint">
+            <strong>Security Hardened Mode:</strong> Roles are loaded dynamically from the database. Unregistered emails will be rejected unless JIT provisioning is enabled.
+        </div>
     </div>
 </body>
 </html>
@@ -257,7 +258,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 // HandleCallback processes OIDC authentication callback (supporting both Mock POST and OIDC GET redirects),
 // saves user details to database, and redirects back to CLI callback server.
 func HandleCallback(w http.ResponseWriter, r *http.Request) {
-	var email, name, role, cliPort, cliState string
+	var email, name, cliPort, cliState string
 
 	conn, err := db.Connect()
 	if err != nil {
@@ -330,7 +331,6 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = strings.Split(email, "@")[0]
 		}
-		role = "developer" // Default role for real OIDC logins, can be updated mapping groups
 
 	} else if r.Method == http.MethodPost {
 		// --- MOCK OIDC POST FLOW ---
@@ -341,11 +341,10 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 		email = r.FormValue("email")
 		name = r.FormValue("name")
-		role = r.FormValue("role")
 		cliPort = r.FormValue("cli_port")
 		cliState = r.FormValue("state")
 
-		if email == "" || name == "" || role == "" {
+		if email == "" || name == "" {
 			http.Error(w, "Missing required parameters", http.StatusBadRequest)
 			return
 		}
@@ -354,49 +353,130 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- COMMON USER REGISTRATION & JWT ISSUING LOGIC ---
+	// --- 1. DOMAIN WHITELIST VALIDATION ---
+	allowedDomainsStr := os.Getenv("OIDC_ALLOWED_DOMAINS")
+	if allowedDomainsStr != "" {
+		allowedDomains := strings.Split(allowedDomainsStr, ",")
+		emailParts := strings.Split(email, "@")
+		if len(emailParts) != 2 {
+			http.Error(w, "Invalid email address format", http.StatusBadRequest)
+			return
+		}
+		domain := emailParts[1]
+		matched := false
+		for _, d := range allowedDomains {
+			if strings.TrimSpace(d) == domain {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			// Log audit log for denied domain
+			_, _ = conn.Exec(`
+				INSERT INTO audit_logs (action, result, reason, created_at)
+				VALUES ('login', 'DENIED', $1, NOW())
+			`, fmt.Sprintf("Domain @%s is not whitelisted", domain))
+
+			http.Error(w, fmt.Sprintf("Access Denied: Email domain @%s is not allowed.", domain), http.StatusForbidden)
+			return
+		}
+	}
+
+	// --- 2. PRE-REGISTRATION / JIT PROVISIONING CHECK ---
 	var userID string
-	err = conn.QueryRow(`
-		INSERT INTO users (email, name, provider, external_id)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (email) DO UPDATE SET name = $2, external_id = $4
-		RETURNING id
-	`, email, name, "oidc", "ext-"+email).Scan(&userID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to save user: %v", err), http.StatusInternalServerError)
+	var dbRoles []string
+	err = conn.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&userID)
+
+	if err == sql.ErrNoRows {
+		// User does not exist
+		jitAllowed := os.Getenv("OIDC_ALLOW_JIT_PROVISIONING") == "true"
+		if !jitAllowed {
+			// Log audit log for denied unregistered user
+			_, _ = conn.Exec(`
+				INSERT INTO audit_logs (action, result, reason, created_at)
+				VALUES ('login', 'DENIED', $1, NOW())
+			`, fmt.Sprintf("User %s is not pre-registered", email))
+
+			http.Error(w, fmt.Sprintf("Access Denied: User %s is not registered in ephem. Please contact your administrator.", email), http.StatusForbidden)
+			return
+		}
+
+		// JIT Provisioning path
+		err = conn.QueryRow(`
+			INSERT INTO users (email, name, provider, external_id)
+			VALUES ($1, $2, 'oidc', $3)
+			RETURNING id
+		`, email, name, "ext-"+email).Scan(&userID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("JIT Provisioning: failed to save user: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Assign default role
+		defaultRoleName := os.Getenv("OIDC_DEFAULT_ROLE")
+		if defaultRoleName == "" {
+			defaultRoleName = "developer"
+		}
+		var roleID string
+		err = conn.QueryRow("SELECT id FROM roles WHERE name = $1", defaultRoleName).Scan(&roleID)
+		if err != nil {
+			// If role doesn't exist, create it dynamically
+			err = conn.QueryRow("INSERT INTO roles (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id", defaultRoleName).Scan(&roleID)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("JIT Provisioning: failed to create role: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		_, err = conn.Exec(`
+			INSERT INTO user_roles (user_id, role_id)
+			VALUES ($1, $2)
+			ON CONFLICT (user_id, role_id) DO NOTHING
+		`, userID, roleID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("JIT Provisioning: failed to associate user and role: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		dbRoles = []string{defaultRoleName}
+
+	} else if err != nil {
+		http.Error(w, fmt.Sprintf("Database query failed: %v", err), http.StatusInternalServerError)
 		return
+	} else {
+		// User exists, retrieve their roles from the database
+		rows, err := conn.Query(`
+			SELECT r.name FROM roles r
+			JOIN user_roles ur ON ur.role_id = r.id
+			WHERE ur.user_id = $1
+		`, userID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to load user roles: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var rName string
+			if err := rows.Scan(&rName); err == nil {
+				dbRoles = append(dbRoles, rName)
+			}
+		}
+
+		if len(dbRoles) == 0 {
+			// Fallback if user somehow has no roles mapped
+			dbRoles = []string{"developer"}
+		}
 	}
 
-	var roleID string
-	err = conn.QueryRow(`
-		INSERT INTO roles (name)
-		VALUES ($1)
-		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-		RETURNING id
-	`, role).Scan(&roleID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create role: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	_, err = conn.Exec(`
-		INSERT INTO user_roles (user_id, role_id)
-		VALUES ($1, $2)
-		ON CONFLICT (user_id, role_id) DO NOTHING
-	`, userID, roleID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to associate user and role: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Generate local JWT token signed with RS256
-	token, err := auth.GenerateToken(userID, email, name, []string{role})
+	// Generate local JWT token signed with RS256 using database roles
+	token, err := auth.GenerateToken(userID, email, name, dbRoles)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to generate JWT: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Audit log
+	// Audit log successful login
 	_, _ = conn.Exec(`
 		INSERT INTO audit_logs (user_id, action, result, created_at)
 		VALUES ($1, 'login', 'SUCCESS', NOW())
