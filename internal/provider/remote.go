@@ -47,9 +47,12 @@ func (p *RemoteProvider) IssueSession(ctx context.Context, req IssueRequest, con
 	}
 
 	creds := credentials.NewTLS(tlsConfig)
-	conn, err := grpc.DialContext(ctx, cfg.AgentAddress, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(dialCtx, cfg.AgentAddress, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to remote agent at %s: %w", cfg.AgentAddress, err)
+		return nil, fmt.Errorf("failed to connect to remote agent at %s (check connection or certs): %w", cfg.AgentAddress, err)
 	}
 	defer conn.Close()
 
@@ -109,9 +112,12 @@ func (p *RemoteProvider) RevokeSession(ctx context.Context, metadata []byte, con
 	}
 
 	creds := credentials.NewTLS(tlsConfig)
-	conn, err := grpc.DialContext(ctx, agentAddr, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(dialCtx, agentAddr, grpc.WithTransportCredentials(creds), grpc.WithBlock())
 	if err != nil {
-		return fmt.Errorf("failed to connect to remote agent at %s for revocation: %w", agentAddr, err)
+		return fmt.Errorf("failed to connect to remote agent at %s for revocation (check connection or certs): %w", agentAddr, err)
 	}
 	defer conn.Close()
 
