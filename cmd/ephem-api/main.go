@@ -20,6 +20,7 @@ func main() {
 
 	http.HandleFunc("/v1/auth/login", api.HandleLogin)
 	http.HandleFunc("/v1/auth/callback", api.HandleCallback)
+	http.HandleFunc("/.well-known/jwks.json", api.HandleJWKS)
 
 	port := os.Getenv("PORT")
 	if port == "" {

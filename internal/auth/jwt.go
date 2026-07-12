@@ -1,20 +1,25 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecretKey = []byte("ephem_jwt_secret_key_change_me_in_production")
-
-func init() {
-	if secret := os.Getenv("JWT_SECRET"); secret != "" {
-		jwtSecretKey = []byte(secret)
-	}
-}
+var (
+	privateKey *rsa.PrivateKey
+	publicKey  *rsa.PublicKey
+	keyID      = "ephem-default-key-id"
+	keyOnce    sync.Once
+)
 
 type Claims struct {
 	Email string   `json:"email"`
@@ -23,8 +28,61 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// GenerateToken creates a signed JWT token for a user
+// GetPublicKey returns the RSA Public Key
+func GetPublicKey() *rsa.PublicKey {
+	ensureKeys()
+	return publicKey
+}
+
+// GetKeyID returns the active Key ID
+func GetKeyID() string {
+	return keyID
+}
+
+func ensureKeys() {
+	keyOnce.Do(func() {
+		privPath := os.Getenv("RSA_PRIVATE_KEY_PATH")
+		if privPath != "" {
+			privBytes, err := os.ReadFile(privPath)
+			if err != nil {
+				panic(fmt.Sprintf("failed to read private key: %v", err))
+			}
+			block, _ := pem.Decode(privBytes)
+			if block == nil {
+				panic("failed to decode PEM block containing private key")
+			}
+			privKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+			if err != nil {
+				// Try PKCS8 format
+				pkcs8Key, err2 := x509.ParsePKCS8PrivateKey(block.Bytes)
+				if err2 != nil {
+					panic(fmt.Sprintf("failed to parse private key: %v (PKCS1) or %v (PKCS8)", err, err2))
+				}
+				var ok bool
+				privKey, ok = pkcs8Key.(*rsa.PrivateKey)
+				if !ok {
+					panic("private key is not an RSA key")
+				}
+			}
+			privateKey = privKey
+			publicKey = &privateKey.PublicKey
+			keyID = "ephem-loaded-key-id"
+			return
+		}
+
+		// Fallback to dynamic generation for development
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(fmt.Sprintf("failed to generate RSA key: %v", err))
+		}
+		privateKey = key
+		publicKey = &key.PublicKey
+	})
+}
+
+// GenerateToken creates a signed RS256 JWT token for a user
 func GenerateToken(userID string, email string, name string, roles []string) (string, error) {
+	ensureKeys()
 	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := &Claims{
 		Email: email,
@@ -39,18 +97,20 @@ func GenerateToken(userID string, email string, name string, roles []string) (st
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecretKey)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = keyID
+	return token.SignedString(privateKey)
 }
 
 // VerifyToken validates the JWT token and returns its claims
 func VerifyToken(tokenStr string) (*Claims, error) {
+	ensureKeys()
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("unexpected signing method")
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return jwtSecretKey, nil
+		return publicKey, nil
 	})
 
 	if err != nil {
