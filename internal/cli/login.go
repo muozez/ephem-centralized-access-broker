@@ -26,6 +26,9 @@ var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Log in to ephem using OIDC",
 	Run: func(cmd *cobra.Command, args []string) {
+		// 0. Clear any existing token before starting a new login
+		_ = RemoveToken()
+
 		// 1. Generate random state for CSRF mitigation
 		state, err := generateRandomState()
 		if err != nil {
