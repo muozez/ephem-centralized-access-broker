@@ -107,6 +107,25 @@ var execCmd = &cobra.Command{
 					fmt.Sprintf("PGPASSWORD=%s", creds.Password),
 					fmt.Sprintf("PGDATABASE=%s", creds.Database),
 				)
+
+				// If user ran "redis-cli", override execution arguments with host/user/pass parameters
+				if commandArgs[0] == "redis-cli" {
+					redisArgs := []string{
+						"-h", creds.Host,
+						"-p", fmt.Sprintf("%d", creds.Port),
+					}
+					if creds.Username != "" {
+						redisArgs = append(redisArgs, "--user", creds.Username)
+					}
+					if creds.Password != "" {
+						redisArgs = append(redisArgs, "-a", creds.Password)
+					}
+					// If they passed additional options (e.g. "ping" or "set"), append them
+					if len(commandArgs) > 1 {
+						redisArgs = append(redisArgs, commandArgs[1:]...)
+					}
+					commandArgs = append([]string{"redis-cli"}, redisArgs...)
+				}
 			}
 		} else if sResp.Type == "ssh_cert" {
 			type SSHCredentials struct {

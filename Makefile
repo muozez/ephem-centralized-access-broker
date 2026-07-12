@@ -7,12 +7,13 @@ API_BINARY=$(BINARY_DIR)/ephem-api
 
 all: build
 
-## build: Build both CLI and API binaries
+## build: Build CLI, API and Agent binaries
 build:
 	@echo "Building binaries..."
 	@mkdir -p $(BINARY_DIR)
 	go build -o $(CLI_BINARY) ./cmd/ephem
 	go build -o $(API_BINARY) ./cmd/ephem-api
+	go build -o $(BINARY_DIR)/ephem-agent ./cmd/ephem-agent
 	@echo "Build complete."
 
 ## run-api: Run the API server locally
