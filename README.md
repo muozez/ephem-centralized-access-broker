@@ -177,6 +177,109 @@ Delete the local session token:
 
 ---
 
+## Distributed Agent Architecture (Bring Your Own Agent)
+
+For secure infrastructure access across private networks or isolated VPCs, `ephem` provides a **Distributed Agent Architecture**. The central `ephem-api` server does not require direct line-of-sight to target databases or machines. Instead, it delegates credential provisioning to a lightweight gRPC agent (`ephem-agent`) running locally inside the target network.
+
+### How the Agent Works
+
+1. **Mutual TLS (mTLS) Security:** The connection between `ephem-api` and `ephem-agent` is secured using Mutual TLS. Both endpoints present X.509 certificates signed by a shared Certificate Authority (CA) and verify each other before transmitting payloads.
+2. **gRPC Protocol:** Sessions are requested and revoked via protobuf-defined gRPC methods over HTTP/2.
+3. **Local Provisioning:** When the Central API receives an access request for a remote resource:
+   - It checks authorization and policy rules locally.
+   - It forwards the request to the target `ephem-agent` over gRPC.
+   - The Agent runs the target provider logic locally (e.g. creating a PostgreSQL user inside its private subnet) and returns the credentials to the API.
+4. **Asynchronous Revocation:** Revocations are scheduled via a Redis-backed queue (`Sorted Set`) in the Central API. When a session expires, the scheduler pops it and requests the agent to remove the database role/credentials immediately.
+
+```
+       +-----------------------+
+       |   Developer/Client    |
+       +-----------+-----------+
+                   |
+            1. Request access
+                   |
+                   v
+       +-----------------------+
+       |       ephem-api       | (Central Control Plane)
+       +-----------+-----------+
+                   |
+     2. gRPC Call over mTLS (VPC Border)
+                   |
+                   v
+       +-----------------------+
+       |      ephem-agent      | (Lightweight Agent inside subnet)
+       +-----------+-----------+
+                   |
+        3. Local provisioning (e.g., PostgreSQL / Redis)
+                   |
+                   v
+       +-----------------------+
+       |    Target Resource    |
+       +-----------------------+
+```
+
+### Bring Your Own Agent (BYOA) Setup
+
+Connecting a new agent to your central `ephem` control plane takes 3 simple steps:
+
+#### 1. Generate Certificates
+Generate server and client certificates signed by your shared internal CA. Place them on the agent machine (e.g., inside `/etc/ephem/certs`):
+- `ca.crt` (CA Root Certificate)
+- `agent.crt` (Agent Server Certificate)
+- `agent.key` (Agent Private Key)
+
+#### 2. Start the Agent
+Launch the `ephem-agent` binary in the target network:
+```bash
+./bin/ephem-agent \
+  --port 50051 \
+  --cert-dir /etc/ephem/certs \
+  --config /etc/ephem/agent_config.json
+```
+*(The agent automatically registers supported local providers like postgres or redis)*
+
+#### 3. Register the Remote Resource in the Central API
+Add the agent provider configuration and target resource in the `ephem` PostgreSQL registry:
+
+```sql
+-- 1. Insert remote configuration pointing to the agent endpoint
+INSERT INTO provider_configs (id, provider, host, port, authentication_method, config_extra)
+VALUES (
+  '8795ea33-88cf-4824-954f-123456789abc',
+  'remote',
+  'agent-hostname-or-ip', -- Target agent host
+  50051,                  -- Target agent port
+  'agent',
+  '{
+     "endpoint": "ephem-agent:50051", 
+     "delegate_provider": "postgres",
+     "delegate_config": {
+       "host": "postgres-internal-db",
+       "port": 5432,
+       "user": "root_user",
+       "password": "root_password",
+       "dbname": "target_db"
+     }
+  }'::jsonb
+);
+
+-- 2. Map target resource to the provider configuration
+INSERT INTO resources (provider, name, display_name, config_id, environment, owner_team, enabled)
+VALUES (
+  'remote',
+  'remote-postgres',
+  'Remote Production Database',
+  '8795ea33-88cf-4824-954f-123456789abc',
+  'production',
+  'data-team',
+  true
+);
+```
+
+Once registered, client commands like `ephem exec remote-postgres -- psql` will automatically route through your agent seamlessly.
+
+---
+
 ## Security Hardening & Policies
 
 To ensure production-grade security, the access broker can be configured using environment variables on the API server:
