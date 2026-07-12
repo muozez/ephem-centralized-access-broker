@@ -1,0 +1,39 @@
+FROM alpine:latest
+
+# Install OpenSSH server and sudo
+RUN apk add --no-cache openssh sudo
+
+# Generate host keys
+RUN ssh-keygen -A
+
+# Configure SSH daemon for CA certificate authentication
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config && \
+    sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/g' /etc/ssh/sshd_config && \
+    echo "TrustedUserCAKeys /etc/ssh/ca.pub" >> /etc/ssh/sshd_config && \
+    echo "AuthorizedKeysFile none" >> /etc/ssh/sshd_config
+
+# Create 'ubuntu' user and unlock account
+RUN adduser -D -s /bin/sh ubuntu && \
+    passwd -u ubuntu && \
+    echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Create root runtime directory for sshd
+RUN mkdir -p /var/run/sshd
+
+EXPOSE 22
+
+# Entrypoint script to wait for the SSH CA key from host mount
+RUN echo -e '#!/bin/sh\n\
+echo "Waiting for SSH CA public key to be generated at /shared/ssh_ca.pub..."\n\
+while [ ! -f /shared/ssh_ca.pub ]; do\n\
+  sleep 0.5\n\
+done\n\
+echo "SSH CA public key detected. Copying to /etc/ssh/ca.pub..."\n\
+cp /shared/ssh_ca.pub /etc/ssh/ca.pub\n\
+chmod 644 /etc/ssh/ca.pub\n\
+echo "Starting OpenSSH daemon..."\n\
+exec /usr/sbin/sshd -D -e' > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]

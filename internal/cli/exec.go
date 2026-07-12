@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -78,8 +79,17 @@ var execCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// 3. Parse credentials payload and prepare environment variables
+		// 3. Parse credentials payload and prepare environment variables / files
 		var envVars []string
+		var tempKeyPath string
+
+		defer func() {
+			if tempKeyPath != "" {
+				_ = os.Remove(tempKeyPath)
+				_ = os.Remove(tempKeyPath + "-cert.pub")
+			}
+		}()
+
 		if sResp.Type == "db_credentials" {
 			type DBCredentials struct {
 				Host     string `json:"host"`
@@ -97,6 +107,38 @@ var execCmd = &cobra.Command{
 					fmt.Sprintf("PGPASSWORD=%s", creds.Password),
 					fmt.Sprintf("PGDATABASE=%s", creds.Database),
 				)
+			}
+		} else if sResp.Type == "ssh_cert" {
+			type SSHCredentials struct {
+				Host        string `json:"host"`
+				Port        int    `json:"port"`
+				Username    string `json:"username"`
+				PrivateKey  string `json:"private_key"`
+				Certificate string `json:"certificate"`
+			}
+			var creds SSHCredentials
+			if err := json.Unmarshal(sResp.Payload, &creds); err == nil {
+				configDir, err := GetConfigDir()
+				if err == nil {
+					tempKeyPath = filepath.Join(configDir, "ssh_temp_"+sResp.SessionID)
+					_ = os.WriteFile(tempKeyPath, []byte(creds.PrivateKey), 0600)
+					_ = os.WriteFile(tempKeyPath+"-cert.pub", []byte(creds.Certificate), 0644)
+
+					// If user ran "ssh", override execution arguments with signed cert parameters
+					if commandArgs[0] == "ssh" {
+						sshArgs := []string{
+							"-i", tempKeyPath,
+							"-p", fmt.Sprintf("%d", creds.Port),
+							"-o", "StrictHostKeyChecking=no",
+							"-o", "UserKnownHostsFile=/dev/null",
+							fmt.Sprintf("%s@%s", creds.Username, creds.Host),
+						}
+						if len(commandArgs) > 1 {
+							sshArgs = append(sshArgs, commandArgs[1:]...)
+						}
+						commandArgs = append([]string{"ssh"}, sshArgs...)
+					}
+				}
 			}
 		}
 
@@ -132,7 +174,7 @@ var execCmd = &cobra.Command{
 		exitErr := child.Wait()
 
 		// 6. Revoke session immediately
-		fmt.Println("\nRevoking ephemeral database credentials...")
+		fmt.Println("\nRevoking ephemeral credentials...")
 		revokeSession(sResp.SessionID, token)
 
 		if exitErr != nil {
