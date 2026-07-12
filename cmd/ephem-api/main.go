@@ -21,6 +21,8 @@ func main() {
 	http.HandleFunc("/v1/auth/login", api.HandleLogin)
 	http.HandleFunc("/v1/auth/callback", api.HandleCallback)
 	http.HandleFunc("/.well-known/jwks.json", api.HandleJWKS)
+	http.HandleFunc("/v1/sessions/request", api.HandleRequestSession)
+	http.HandleFunc("/v1/sessions/revoke", api.HandleRevokeSession)
 
 	port := os.Getenv("PORT")
 	if port == "" {
