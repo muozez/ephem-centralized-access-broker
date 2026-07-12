@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/muozez/ephem-centralized-access-broker/internal/api"
+	"github.com/muozez/ephem-centralized-access-broker/internal/provider"
 	"github.com/muozez/ephem-centralized-access-broker/internal/scheduler"
 )
 
@@ -17,6 +18,9 @@ func main() {
 	sched := scheduler.NewScheduler()
 	sched.Start(10 * time.Second)
 	defer sched.Stop()
+
+	// Pre-initialize providers to warm cache and generate dev key assets (like SSH CA keys)
+	_ = provider.GetRegistry()
 
 	// Register Routes
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

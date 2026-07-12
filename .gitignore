@@ -18,3 +18,7 @@
 .idea/
 .vscode/
 .DS_Store
+
+# Ephemeral SSH CA keys
+/ssh_ca.key
+/ssh_ca.pub

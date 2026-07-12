@@ -5,7 +5,7 @@
 
 > **"Infrastructure access, issued on demand."**
 > 
-> *ephem* (from *ephemeral*) is an enterprise-grade, centralized access broker that implements the **Zero Standing Privileges (ZSP)** philosophy. Instead of distributing permanent credentials or standing access to critical resources, ephem authenticates users via OpenID Connect (OIDC) and provisions short-lived, automated credentials on the target systems on-demand.
+> *ephem* (from *ephemeral*) is an enterprise-grade, centralized access broker that implements the **Zero Standing Privileges (ZSP)** philosophy. Instead of distributing permanent credentials or standing access to critical resources, ephem authenticates users via OpenID Connect (OIDC) and provisions short-lived, automated credentials and signed SSH certificates on target systems on-demand.
 
 ---
 
@@ -14,20 +14,24 @@
 1. [Key Features](#key-features)
 2. [Architectural Overview](#architectural-overview)
 3. [Database Schema](#database-schema)
-4. [Getting Started](#getting-started)
-5. [Usage Guide](#usage-guide)
-6. [Security Hardening & Policies](#security-hardening--policies)
-7. [Testing](#testing)
+4. [Supported Providers](#supported-providers)
+   - [PostgreSQL Provider (Role Provisioning)](#postgresql-provider-role-provisioning)
+   - [SSH Provider (CA Signed Certificates)](#ssh-provider-ca-signed-certificates)
+5. [Getting Started (Dockerized Sandbox)](#getting-started-dockerized-sandbox)
+6. [Usage Guide](#usage-guide)
+7. [Security Hardening & Policies](#security-hardening--policies)
+8. [Testing](#testing)
 
 ---
 
 ## Key Features
 
-- **Zero Standing Privileges (ZSP):** No persistent passwords, API tokens, or permanent admin roles exist on target systems. All access is temporary and automatically revoked.
+- **Zero Standing Privileges (ZSP):** No persistent passwords, API tokens, or permanent admin roles exist on target systems. All access is temporary, audited, and automatically revoked.
 - **Asymmetric Cryptography (RS256 & JWKS):** All authorization tokens (JWTs) are signed using a 2048-bit RSA private key. The API exposes a standard JSON Web Key Set (JWKS) endpoint (`/.well-known/jwks.json`) for downstream validation.
+- **SSH Certificate Authority (CA):** Implements dynamic, on-the-fly user key pair generation and SSH certificate signing. The target SSH host disables password authentication and trusts the broker's CA public key for secure access without pre-configured keys on the host.
 - **CSRF-Hardened Authentication:** Features state verification at both the CLI loopback listener level and the OAuth2 redirection flow to prevent request injection.
 - **Glob-Based Policy Engine:** Access control rules support wildcard/glob syntax for resource matching combined with maximum session duration limits.
-- **Provider-Agnostic Plugin Registry:** Providers (such as the local PostgreSQL Provider) implement a clean, standard interface to issue and revoke credentials.
+- **Provider-Agnostic Plugin Registry:** Providers (such as Postgres and SSH) implement a clean, standard interface to issue and revoke credentials.
 - **Comprehensive Audit Trail:** All access requests, policy evaluations, and revocations are saved to structured audit logs.
 
 ---
@@ -43,22 +47,23 @@
                                 |
                                 v
                       +-------------------+
-                      |     ephem-api     |
+                      |     ephem-api     | (Central Broker)
                       +---------+---------+
                                 |
-                    2. Policy Engine Check
+                     2. Policy Engine Check
                                 |
                                 v
                       +-------------------+
                       | Provider Registry |
-                      +---------+---------+
-                                |
-                 3. Issue Temporary Postgres Role
-                                |
-                                v
-                      +-------------------+
-                      |  Target Resource  |
-                      +-------------------+
+                      +----+-----------+--+
+                           |           |
+        3a. Create Temp    |           | 3b. Sign Client Key
+            Postgres Role  |           |     With CA Private Key
+                           v           v
+                    +----------+   +----------+
+                    | Postgres |   | Target   |
+                    | DB Host  |   | SSH Host |
+                    +----------+   +----------+
 ```
 
 ### Authentication Lifecycle
@@ -86,15 +91,32 @@ The persistence layer is structured for compliance and strict access tracking:
 
 ---
 
-## Getting Started
+## Supported Providers
+
+### PostgreSQL Provider (Role Provisioning)
+Provisions short-lived PostgreSQL database roles on-demand.
+- **Issuance:** Generates a temporary username (`ephem_u_<session_id>`) and a secure password. Creates the role with `LOGIN` and grants standard permissions.
+- **Revocation:** Terminates all active connections for the temporary role, revokes its grants, and drops the role.
+
+### SSH Provider (CA Signed Certificates)
+Enables passwordless, secure SSH access using short-lived SSH user certificates.
+- **Issuance:** Generates a temporary RSA keypair. Signs the public key using the broker's CA private key, setting the principal to the target username and the certificate expiry to the session duration.
+- **Revocation:** Since the certificate naturally expires based on the duration enforced by the target SSH daemon, no active revocation is required. The CLI deletes key assets from disk immediately on exit.
+
+---
+
+## Getting Started (Dockerized Sandbox)
+
+We provide a complete multi-container sandbox environment in `docker-compose.yml` which includes:
+1. **`postgres`:** Central database containing schemas, configs, resources, and policy seeds.
+2. **`ephem-api`:** The central access broker compiling and running Go code.
+3. **`target-ssh`:** An Alpine-based SSH server configured with `PasswordAuthentication no` and trusting the broker's SSH CA public key.
 
 ### Prerequisites
-
 - Go (1.22+)
 - Docker & Docker Compose
-- `psql` (optional, for manual verification)
 
-### Setting Up the Environment
+### Starting the Sandbox
 
 1. Clone the repository:
    ```bash
@@ -102,42 +124,53 @@ The persistence layer is structured for compliance and strict access tracking:
    cd ephem-centralized-access-broker
    ```
 
-2. Start the PostgreSQL database container (contains the schema and initial seed data):
+2. Spin up the containers (this compiles the API and configures SSH CA Trust automatically):
    ```bash
-   docker-compose up -d
+   docker-compose up --build -d
    ```
 
-3. Build the CLI and API binaries:
+3. Build the CLI binary:
    ```bash
    make build
    ```
-   This compiles `ephem` and `ephem-api` into the `bin/` directory.
 
 ---
 
 ## Usage Guide
 
-### 1. Start the API Server
-Run the API server (it defaults to port `8080`):
-```bash
-./bin/ephem-api
-```
-
-### 2. Log in with the CLI
-In a new terminal window, execute:
+### 1. Log in with the CLI
+Run the login sequence:
 ```bash
 ./bin/ephem login
 ```
-Open the printed link in your browser. If OIDC is disabled (default dev mode), you will see the developer mock login interface. Enter `developer@company.com` (which is pre-registered in the seed data) to log in.
+Open the printed link in your browser. Enter `developer@company.com` (which is pre-registered in the seed data) to log in.
 
-### 3. Verify Identity
-Check your currently logged-in user profile and roles:
+### 2. Verify Identity and Health
+Check the current session and run self-diagnostics:
 ```bash
 ./bin/ephem whoami
+./bin/ephem doctor
 ```
 
-### 4. Log out
-To delete the local session token:
+### 3. Connect to Ephemeral PostgreSQL
+Use the convenience command to connect to the database via `psql` (the database credentials are dynamically generated, mapped to standard env variables, passed to `psql`, and revoked immediately when you exit `psql`):
+```bash
+./bin/ephem postgres staging
+```
+
+### 4. Connect to Target SSH Host
+Run an interactive SSH shell on the `target-ssh` host using short-lived SSH certificates (no passwords or manual keys required):
+```bash
+./bin/ephem ssh staging
+```
+
+You can also execute non-interactive remote commands securely:
+```bash
+./bin/ephem exec ssh-staging -- ssh id
+```
+
+### 5. Log out
+Delete the local session token:
 ```bash
 ./bin/ephem logout
 ```
@@ -155,24 +188,25 @@ To ensure production-grade security, the access broker can be configured using e
 | `OIDC_DEFAULT_ROLE` | The default role assigned to new JIT-provisioned users. | `developer` |
 | `OIDC_ALLOWED_DOMAINS` | Comma-separated list of domains allowed to log in (e.g. `company.com`). | (no restriction) |
 | `RSA_PRIVATE_KEY_PATH` | Path to custom PEM-encoded RSA Private Key for JWT signing. | (auto-generates dynamic key) |
+| `SSH_CA_PRIVATE_KEY_PATH` | Path to custom SSH CA Private Key for signing SSH host certificates. | `/shared/ssh_ca.key` |
+| `SSH_CA_PUBLIC_KEY_PATH` | Path to custom SSH CA Public Key. | `/shared/ssh_ca.pub` |
 
 ---
 
 ## Testing
 
 ### Unit Tests
-Verify the JWT signing logic and verify key sets:
+Verify the cryptographic operations and JWKS publishing:
 ```bash
 make test
 ```
 
 ### Integration Tests
-To test the user enrollment policies and PostgreSQL Provider end-to-end (role provisioning, connectivity verification, and dropping roles from the real container):
-
+Run sandbox-specific testing scripts to verify logins, policies, and DB/SSH lifecycles:
 ```bash
-# Verify OIDC security policies (CSRF, pre-registration block, whitelists)
+# Verify OIDC security policies (CSRF, domain blocks, enrollment)
 ./scratch/test_login.sh
 
-# Verify PostgreSQL Provider & Policy Engine (issuing and revoking temporary roles)
+# Verify PostgreSQL Provider & Policy Engine
 ./scratch/test_postgres_provider.sh
 ```

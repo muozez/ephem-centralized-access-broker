@@ -22,6 +22,7 @@ func GetRegistry() *Registry {
 	registryOnce.Do(func() {
 		globalRegistry = NewRegistry()
 		globalRegistry.Register(NewPostgresProvider())
+		globalRegistry.Register(NewSSHProvider())
 	})
 	return globalRegistry
 }

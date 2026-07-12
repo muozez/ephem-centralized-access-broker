@@ -1,0 +1,27 @@
+FROM golang:alpine AS builder
+
+WORKDIR /app
+
+# Install git for dependency resolution if needed
+RUN apk add --no-cache git
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o ephem-api ./cmd/ephem-api
+
+FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates curl
+
+WORKDIR /app
+
+COPY --from=builder /app/ephem-api .
+COPY --from=builder /app/migrations ./migrations
+
+# Expose API port
+EXPOSE 8080
+
+CMD ["./ephem-api"]

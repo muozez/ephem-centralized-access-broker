@@ -509,7 +509,7 @@ Maksimum odaklanma sağlamak ve bağımlılık yükünü azaltmak için v1.0 kap
 - [ ] Redis Provider (`ACL SETUSER`, `ACL DELUSER`).
 - [ ] MongoDB Provider (`db.createUser`, `db.dropUser`).
 - [ ] Kubernetes Provider (CSR tabanlı Kubeconfig üretimi).
-- [ ] SSH Provider (SSH CA signed certificates).
+- [x] SSH Provider (SSH CA signed certificates).
 - [ ] AWS Provider (`sts:AssumeRole`).
 
 #### v1.4 — Distributed Agent Mimarisi

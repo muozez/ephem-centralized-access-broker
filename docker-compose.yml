@@ -20,5 +20,38 @@ services:
       timeout: 5s
       retries: 5
 
+  ephem-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: ephem-api
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://ephem:ephem_password@postgres:5432/ephem?sslmode=disable
+      - SSH_CA_PRIVATE_KEY_PATH=/shared/ssh_ca.key
+      - SSH_CA_PUBLIC_KEY_PATH=/shared/ssh_ca.pub
+      - OIDC_ALLOWED_DOMAINS=company.com
+      - OIDC_ALLOW_JIT_PROVISIONING=false
+    volumes:
+      - .:/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  target-ssh:
+    build:
+      context: .
+      dockerfile: Dockerfile.ssh
+    container_name: ephem-target-ssh
+    restart: always
+    ports:
+      - "2222:22"
+    volumes:
+      - .:/shared:ro
+    depends_on:
+      - ephem-api
+
 volumes:
   postgres_data:
