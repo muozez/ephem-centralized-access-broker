@@ -150,6 +150,14 @@ func (p *SSHProvider) IssueSession(ctx context.Context, req IssueRequest, config
 		ValidPrincipals: []string{cfg.Username},
 		ValidAfter:      uint64(validAfter.Unix()),
 		ValidBefore:     uint64(validBefore.Unix()),
+		Permissions: ssh.Permissions{
+			Extensions: map[string]string{
+				"permit-pty":              "",
+				"permit-port-forwarding":  "",
+				"permit-agent-forwarding": "",
+				"permit-user-rc":          "",
+			},
+		},
 	}
 
 	// Sign the certificate
