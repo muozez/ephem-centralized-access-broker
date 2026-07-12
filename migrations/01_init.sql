@@ -87,3 +87,30 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   ip_address    INET,
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Seed Data: Roles
+INSERT INTO roles (name) VALUES
+  ('admin'),
+  ('developer'),
+  ('dba'),
+  ('devops')
+ON CONFLICT (name) DO NOTHING;
+
+-- Seed Data: Pre-registered Users
+INSERT INTO users (email, name, provider, external_id) VALUES
+  ('admin@company.com', 'Admin User', 'oidc', 'ext-admin@company.com'),
+  ('developer@company.com', 'Developer User', 'oidc', 'ext-developer@company.com')
+ON CONFLICT (email) DO NOTHING;
+
+-- Seed Data: User Roles Mapping
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.email = 'admin@company.com' AND r.name = 'admin'
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.email = 'developer@company.com' AND r.name = 'developer'
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+
