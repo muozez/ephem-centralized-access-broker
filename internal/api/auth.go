@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"fmt"
 	"html/template"
 	"net/http"
