@@ -4,12 +4,19 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/muozez/ephem-centralized-access-broker/internal/api"
+	"github.com/muozez/ephem-centralized-access-broker/internal/scheduler"
 )
 
 func main() {
 	fmt.Println("Starting ephem API Server...")
+
+	// Start background polling scheduler (runs every 10 seconds)
+	sched := scheduler.NewScheduler()
+	sched.Start(10 * time.Second)
+	defer sched.Stop()
 
 	// Register Routes
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
