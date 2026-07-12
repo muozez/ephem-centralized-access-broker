@@ -23,6 +23,8 @@ type SSHConfig struct {
 	Port       int    `json:"port"`
 	Username   string `json:"username"`
 	CAPrivate  string `json:"ca_private_key"` // PEM encoded
+	ClientHost string `json:"client_host"`
+	ClientPort int    `json:"client_port"`
 }
 
 type SSHCredentialPayload struct {
@@ -157,10 +159,19 @@ func (p *SSHProvider) IssueSession(ctx context.Context, req IssueRequest, config
 
 	certBytes := ssh.MarshalAuthorizedKey(cert)
 
+	clientHost := cfg.ClientHost
+	if clientHost == "" {
+		clientHost = cfg.Host
+	}
+	clientPort := cfg.ClientPort
+	if clientPort == 0 {
+		clientPort = cfg.Port
+	}
+
 	// 4. Return credentials payload
 	payload := SSHCredentialPayload{
-		Host:        cfg.Host,
-		Port:        cfg.Port,
+		Host:        clientHost,
+		Port:        clientPort,
 		Username:    cfg.Username,
 		PrivateKey:  string(clientPrivPEM),
 		Certificate: string(certBytes),

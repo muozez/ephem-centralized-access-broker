@@ -127,6 +127,7 @@ var execCmd = &cobra.Command{
 					// If user ran "ssh", override execution arguments with signed cert parameters
 					if commandArgs[0] == "ssh" {
 						sshArgs := []string{
+							"-t", // Force PTY allocation for interactive shells
 							"-i", tempKeyPath,
 							"-p", fmt.Sprintf("%d", creds.Port),
 							"-o", "StrictHostKeyChecking=no",
