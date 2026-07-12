@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,11 +14,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func generateRandomState() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
 var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Log in to ephem using OIDC",
 	Run: func(cmd *cobra.Command, args []string) {
-		// 1. Start local listener
+		// 1. Generate random state for CSRF mitigation
+		state, err := generateRandomState()
+		if err != nil {
+			fmt.Printf("Error generating state: %v\n", err)
+			return
+		}
+
+		// 2. Start local listener
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			fmt.Printf("Error starting local server: %v\n", err)
@@ -37,6 +54,15 @@ var loginCmd = &cobra.Command{
 		server := &http.Server{Handler: mux}
 
 		mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+			// Verify CSRF state
+			callbackState := r.URL.Query().Get("state")
+			if callbackState == "" || callbackState != state {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte("CSRF State mismatch/invalid request"))
+				errChan <- fmt.Errorf("state mismatch: expected %s, got %s", state, callbackState)
+				return
+			}
+
 			token := r.URL.Query().Get("token")
 			if token == "" {
 				w.WriteHeader(http.StatusBadRequest)
@@ -47,7 +73,6 @@ var loginCmd = &cobra.Command{
 
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			// Premium visual success page
 			w.Write([]byte(`
 				<!DOCTYPE html>
 				<html>
@@ -102,7 +127,7 @@ var loginCmd = &cobra.Command{
 			}
 		}()
 
-		loginURL := fmt.Sprintf("%s/v1/auth/login?cli_port=%s", ApiURL, port)
+		loginURL := fmt.Sprintf("%s/v1/auth/login?cli_port=%s&state=%s", ApiURL, port, state)
 		fmt.Printf("Opening browser to OIDC provider:\n%s\n\n", loginURL)
 		
 		_ = openBrowser(loginURL)

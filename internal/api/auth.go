@@ -1,10 +1,16 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
+	"strings"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/muozez/ephem-centralized-access-broker/internal/auth"
 	"github.com/muozez/ephem-centralized-access-broker/internal/db"
 )
@@ -148,6 +154,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`
         
         <form method="POST" action="/v1/auth/callback">
             <input type="hidden" name="cli_port" value="{{.CliPort}}">
+            <input type="hidden" name="state" value="{{.State}}">
             
             <div class="form-group">
                 <label for="email">Email Address</label>
@@ -178,9 +185,17 @@ var loginTemplate = template.Must(template.New("login").Parse(`
 
 type loginPageData struct {
 	CliPort string
+	State   string
 }
 
-// HandleLogin renders the mock OIDC login page
+// Generate secure random state
+func generateSecureState() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// HandleLogin renders the mock OIDC login page or redirects to real OIDC provider
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -188,39 +203,62 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cliPort := r.URL.Query().Get("cli_port")
+	cliState := r.URL.Query().Get("state")
 
+	// Real OIDC check
+	if os.Getenv("OIDC_ENABLED") == "true" {
+		issuer := os.Getenv("OIDC_ISSUER")
+		clientID := os.Getenv("OIDC_CLIENT_ID")
+		redirectURL := os.Getenv("OIDC_REDIRECT_URL")
+
+		if issuer == "" || clientID == "" || redirectURL == "" {
+			http.Error(w, "OIDC configuration missing (OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_REDIRECT_URL)", http.StatusInternalServerError)
+			return
+		}
+
+		config, err := auth.DiscoverProvider(issuer)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("OIDC Discovery failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Generate OAuth CSRF state
+		oauthCSRFState := generateSecureState()
+		cookie := &http.Cookie{
+			Name:     "ephem_oauth_state",
+			Value:    oauthCSRFState,
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   300, // 5 minutes
+		}
+		http.SetCookie(w, cookie)
+
+		// Combine parameters in the OIDC state: cliPort:cliState:oauthCSRFState
+		combinedState := fmt.Sprintf("%s:%s:%s", cliPort, cliState, oauthCSRFState)
+		encodedState := base64.RawURLEncoding.EncodeToString([]byte(combinedState))
+
+		authorizeURL := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&response_type=code&scope=openid+email+profile&state=%s",
+			config.AuthURL, clientID, redirectURL, encodedState)
+
+		http.Redirect(w, r, authorizeURL, http.StatusSeeOther)
+		return
+	}
+
+	// Fallback to beautiful Mock OIDC Developer page
 	data := loginPageData{
 		CliPort: cliPort,
+		State:   cliState,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = loginTemplate.Execute(w, data)
 }
 
-// HandleCallback processes OIDC authentication callback, saves user details to database,
-// and redirects back to CLI callback server.
+// HandleCallback processes OIDC authentication callback (supporting both Mock POST and OIDC GET redirects),
+// saves user details to database, and redirects back to CLI callback server.
 func HandleCallback(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+	var email, name, role, cliPort, cliState string
 
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Failed to parse form", http.StatusBadRequest)
-		return
-	}
-
-	email := r.FormValue("email")
-	name := r.FormValue("name")
-	role := r.FormValue("role")
-	cliPort := r.FormValue("cli_port")
-
-	if email == "" || name == "" || role == "" {
-		http.Error(w, "Missing required parameters", http.StatusBadRequest)
-		return
-	}
-
-	// 1. Save or Update User in the Database
 	conn, err := db.Connect()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Database connection failed: %v", err), http.StatusInternalServerError)
@@ -228,6 +266,95 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	if r.Method == http.MethodGet {
+		// --- REAL OIDC GET CALLBACK FLOW ---
+		code := r.URL.Query().Get("code")
+		stateParam := r.URL.Query().Get("state")
+
+		if code == "" || stateParam == "" {
+			http.Error(w, "Missing code or state parameters from OIDC", http.StatusBadRequest)
+			return
+		}
+
+		// Decode unified state: cliPort:cliState:oauthCSRFState
+		decodedBytes, err := base64.RawURLEncoding.DecodeString(stateParam)
+		if err != nil {
+			http.Error(w, "Invalid state format", http.StatusBadRequest)
+			return
+		}
+		parts := strings.Split(string(decodedBytes), ":")
+		if len(parts) != 3 {
+			http.Error(w, "Malformed state parameter", http.StatusBadRequest)
+			return
+		}
+		cliPort = parts[0]
+		cliState = parts[1]
+		oauthState := parts[2]
+
+		// Verify CSRF Cookie
+		cookie, err := r.Cookie("ephem_oauth_state")
+		if err != nil || cookie.Value != oauthState {
+			http.Error(w, "CSRF validation failed: State mismatch or cookie expired", http.StatusForbidden)
+			return
+		}
+
+		// OIDC code exchange
+		issuer := os.Getenv("OIDC_ISSUER")
+		clientID := os.Getenv("OIDC_CLIENT_ID")
+		clientSecret := os.Getenv("OIDC_CLIENT_SECRET")
+		redirectURL := os.Getenv("OIDC_REDIRECT_URL")
+
+		config, err := auth.DiscoverProvider(issuer)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("OIDC Discovery failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		tokenResp, err := auth.ExchangeCode(config.TokenURL, clientID, clientSecret, code, redirectURL)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("OIDC Token Exchange failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Parse OIDC ID Token claims
+		parser := jwt.NewParser()
+		oidcClaims := &auth.OIDCClaims{}
+		_, _, err = parser.ParseUnverified(tokenResp.IDToken, oidcClaims)
+		if err != nil || oidcClaims.Email == "" {
+			http.Error(w, "Failed to parse claims from OIDC ID Token", http.StatusInternalServerError)
+			return
+		}
+
+		email = oidcClaims.Email
+		name = oidcClaims.Name
+		if name == "" {
+			name = strings.Split(email, "@")[0]
+		}
+		role = "developer" // Default role for real OIDC logins, can be updated mapping groups
+
+	} else if r.Method == http.MethodPost {
+		// --- MOCK OIDC POST FLOW ---
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "Failed to parse form", http.StatusBadRequest)
+			return
+		}
+
+		email = r.FormValue("email")
+		name = r.FormValue("name")
+		role = r.FormValue("role")
+		cliPort = r.FormValue("cli_port")
+		cliState = r.FormValue("state")
+
+		if email == "" || name == "" || role == "" {
+			http.Error(w, "Missing required parameters", http.StatusBadRequest)
+			return
+		}
+	} else {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// --- COMMON USER REGISTRATION & JWT ISSUING LOGIC ---
 	var userID string
 	err = conn.QueryRow(`
 		INSERT INTO users (email, name, provider, external_id)
@@ -240,7 +367,6 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Ensure Role exists and Link User
 	var roleID string
 	err = conn.QueryRow(`
 		INSERT INTO roles (name)
@@ -263,22 +389,22 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Generate JWT Token
+	// Generate local JWT token signed with RS256
 	token, err := auth.GenerateToken(userID, email, name, []string{role})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to generate JWT: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// 4. Log the login event in audit logs
+	// Audit log
 	_, _ = conn.Exec(`
 		INSERT INTO audit_logs (user_id, action, result, created_at)
 		VALUES ($1, 'login', 'SUCCESS', NOW())
 	`, userID)
 
-	// 5. Redirect back to CLI port callback URL if available
+	// Redirect to CLI callback server including token and CLI CSRF state
 	if cliPort != "" {
-		redirectURL := fmt.Sprintf("http://127.0.0.1:%s/callback?token=%s", cliPort, token)
+		redirectURL := fmt.Sprintf("http://127.0.0.1:%s/callback?token=%s&state=%s", cliPort, token, cliState)
 		http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 		return
 	}
