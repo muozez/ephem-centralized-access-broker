@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/muozez/ephem-centralized-access-broker/internal/db"
@@ -57,21 +58,6 @@ func (s *Scheduler) pollAndRevokeExpired() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Query expired active sessions
-	query := `
-		SELECT s.id, s.provider, s.metadata, c.config_extra, r.name, s.user_id
-		FROM sessions s
-		JOIN resources r ON r.id = s.resource_id
-		JOIN provider_configs c ON c.id = r.config_id
-		WHERE s.status = 'ACTIVE' AND s.expires_at <= NOW()
-	`
-	rows, err := conn.QueryContext(ctx, query)
-	if err != nil {
-		log.Printf("[Scheduler] Failed to query expired sessions: %v\n", err)
-		return
-	}
-	defer rows.Close()
-
 	type ExpiredSession struct {
 		ID           string
 		ProviderName string
@@ -82,6 +68,43 @@ func (s *Scheduler) pollAndRevokeExpired() {
 	}
 
 	var expired []ExpiredSession
+	var rows *sql.Rows
+
+	// Try popping from Redis queue first
+	redisExpiredIDs, _ := PopExpiredSessions(ctx)
+	if len(redisExpiredIDs) > 0 {
+		placeholders := make([]string, len(redisExpiredIDs))
+		args := make([]interface{}, len(redisExpiredIDs))
+		for i, id := range redisExpiredIDs {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+			args[i] = id
+		}
+		query := fmt.Sprintf(`
+			SELECT s.id, s.provider, s.metadata, c.config_extra, r.name, s.user_id
+			FROM sessions s
+			JOIN resources r ON r.id = s.resource_id
+			JOIN provider_configs c ON c.id = r.config_id
+			WHERE s.id IN (%s)
+		`, strings.Join(placeholders, ", "))
+		rows, err = conn.QueryContext(ctx, query, args...)
+	} else {
+		// Fallback to SQL polling
+		query := `
+			SELECT s.id, s.provider, s.metadata, c.config_extra, r.name, s.user_id
+			FROM sessions s
+			JOIN resources r ON r.id = s.resource_id
+			JOIN provider_configs c ON c.id = r.config_id
+			WHERE s.status = 'ACTIVE' AND s.expires_at <= NOW()
+		`
+		rows, err = conn.QueryContext(ctx, query)
+	}
+
+	if err != nil {
+		log.Printf("[Scheduler] Failed to query expired sessions: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
 	for rows.Next() {
 		var es ExpiredSession
 		err := rows.Scan(&es.ID, &es.ProviderName, &es.Metadata, &es.ConfigExtra, &es.ResourceName, &es.UserID)

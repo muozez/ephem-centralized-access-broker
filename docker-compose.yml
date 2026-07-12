@@ -34,11 +34,17 @@ services:
       - SSH_CA_PUBLIC_KEY_PATH=/shared/ssh_ca.pub
       - OIDC_ALLOWED_DOMAINS=company.com
       - OIDC_ALLOW_JIT_PROVISIONING=false
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis_password
+      - MTLS_CERT_DIR=/shared/certs
     volumes:
       - .:/shared
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
 
   target-ssh:
     build:
@@ -52,6 +58,32 @@ services:
       - .:/shared:ro
     depends_on:
       - ephem-api
+
+  redis:
+    image: redis:7-alpine
+    container_name: ephem-redis
+    restart: always
+    command: redis-server --requirepass redis_password
+    ports:
+      - "6379:6379"
+
+  ephem-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: ephem-agent
+    restart: always
+    ports:
+      - "50051:50051"
+    environment:
+      - AGENT_PORT=50051
+      - MTLS_CERT_DIR=/shared/certs
+      - AGENT_CONFIG_PATH=/shared/agent_config.json
+    volumes:
+      - .:/shared
+    depends_on:
+      - redis
+      - postgres
 
 volumes:
   postgres_data:

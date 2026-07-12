@@ -35,6 +35,16 @@ func main() {
 	http.HandleFunc("/v1/sessions/request", api.HandleRequestSession)
 	http.HandleFunc("/v1/sessions/revoke", api.HandleRevokeSession)
 
+	// Admin Console Endpoints
+	http.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(api.AdminConsoleHTML))
+	})
+	http.HandleFunc("/v1/admin/sessions", api.HandleAdminSessions)
+	http.HandleFunc("/v1/admin/resources", api.HandleAdminResources)
+	http.HandleFunc("/v1/admin/policies", api.HandleAdminPolicies)
+	http.HandleFunc("/v1/admin/audit_logs", api.HandleAdminAuditLogs)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

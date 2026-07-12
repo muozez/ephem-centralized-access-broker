@@ -15,6 +15,7 @@ type IssueResponse struct {
 	ExpiresAt time.Time   `json:"expires_at"`
 	Type      SessionType `json:"type"`
 	Payload   []byte      `json:"payload"`
+	Metadata  []byte      `json:"metadata"`
 }
 
 type IssueRequest struct {

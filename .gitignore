@@ -2,6 +2,7 @@
 /bin/
 /ephem
 /ephem-api
+/ephem-agent
 
 # Local credentials & configs
 .env
@@ -22,3 +23,7 @@
 # Ephemeral SSH CA keys
 /ssh_ca.key
 /ssh_ca.pub
+
+# MTLS certs and runtime configs
+/certs/
+/agent_config.json

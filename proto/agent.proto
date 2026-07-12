@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package agent;
+
+option go_package = "github.com/muozez/ephem-centralized-access-broker/internal/agent/proto";
+
+service AgentService {
+  rpc IssueSession (IssueRequest) returns (IssueResponse);
+  rpc RevokeSession (RevokeRequest) returns (RevokeResponse);
+}
+
+message IssueRequest {
+  string session_id = 1;
+  string username = 2;
+  int64 duration_seconds = 3;
+  string provider = 4;
+}
+
+message IssueResponse {
+  int64 expires_at_unix = 1;
+  string session_type = 2;
+  bytes credential_payload = 3;
+}
+
+message RevokeRequest {
+  string provider = 1;
+  bytes metadata = 2;
+}
+
+message RevokeResponse {
+  bool success = 1;
+  string error_message = 2;
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/muozez/ephem-centralized-access-broker/internal/db"
 	"github.com/muozez/ephem-centralized-access-broker/internal/policy"
 	"github.com/muozez/ephem-centralized-access-broker/internal/provider"
+	"github.com/muozez/ephem-centralized-access-broker/internal/scheduler"
 )
 
 // generateUUID creates a cryptographically secure RFC 4122 v4 compliant UUID
@@ -156,7 +157,13 @@ func HandleRequestSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 8. Save Session to DB
-	metaBytes, _ := json.Marshal(map[string]string{"username": tempUsername})
+	var metaBytes []byte
+	if len(resp.Metadata) > 0 {
+		metaBytes = resp.Metadata
+	} else {
+		metaBytes, _ = json.Marshal(map[string]string{"username": tempUsername})
+	}
+
 	_, err = conn.ExecContext(r.Context(), `
 		INSERT INTO sessions (id, user_id, resource_id, provider, issued_at, expires_at, status, metadata)
 		VALUES ($1, $2, $3, $4, NOW(), $5, 'ACTIVE', $6)
@@ -171,6 +178,9 @@ func HandleRequestSession(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO audit_logs (user_id, session_id, action, resource_name, result, created_at)
 		VALUES ($1, $2, 'request_session', $3, 'SUCCESS', NOW())
 	`, claims.Subject, sessionID, res.Name)
+
+	// 9b. Push to Redis queue if enabled
+	_ = scheduler.ScheduleRevocation(r.Context(), sessionID, resp.ExpiresAt)
 
 	// 10. Return Response
 	type JSONResponse struct {

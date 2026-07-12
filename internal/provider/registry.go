@@ -2,7 +2,10 @@ package provider
 
 import (
 	"fmt"
+	"os"
 	"sync"
+
+	"github.com/muozez/ephem-centralized-access-broker/internal/mtls"
 )
 
 type Registry struct {
@@ -23,6 +26,14 @@ func GetRegistry() *Registry {
 		globalRegistry = NewRegistry()
 		globalRegistry.Register(NewPostgresProvider())
 		globalRegistry.Register(NewSSHProvider())
+		globalRegistry.Register(NewRedisProvider())
+
+		certDir := os.Getenv("MTLS_CERT_DIR")
+		if certDir == "" {
+			certDir = "certs"
+		}
+		_ = mtls.GenerateKeysAndCerts(certDir)
+		globalRegistry.Register(NewRemoteProvider(certDir))
 	})
 	return globalRegistry
 }
